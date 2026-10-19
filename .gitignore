@@ -65,3 +65,4 @@ app/tests/e2e/test-results
 
 # Playwright
 /test-results/
+.\env

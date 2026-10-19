@@ -1,0 +1,72 @@
+<script setup lang="ts">
+import type { Track } from "@/types";
+import { deleteTrackAPI } from "@/entities/tracks";
+import type { DeepReadonly } from "vue";
+
+const props = defineProps<{
+  track: DeepReadonly<Track>;
+}>();
+
+const emit = defineEmits<{
+  close: [];
+}>();
+
+const tracksStore = useTracksStore();
+
+const { addErrorToast, addSuccessToast } = useTracksToasts();
+
+const { playingTrackId, nextTrack } = usePlaybackStore();
+
+const handleDeleteTrack = async () => {
+  emit("close");
+
+  if (props.track.id === playingTrackId) {
+    nextTrack();
+  }
+
+  tracksStore.deleteTrack(props.track.id);
+
+  const { error } = await deleteTrackAPI(props.track.id);
+
+  if (error) {
+    tracksStore.createTrack(props.track);
+
+    addErrorToast(error);
+  } else {
+    addSuccessToast("delete");
+  }
+};
+</script>
+
+<template>
+  <AppModal title="Delete track" data-testid="confirm-dialog">
+    <p>
+      Do you want to delete track with id
+      <span class="font-medium">{{ track.id }}</span
+      >?
+    </p>
+
+    <template #actions>
+      <div class="col-span-2 w-full flex gap-2">
+        <BaseButton
+          transparent
+          class="w-full"
+          type="button"
+          @click="$emit('close')"
+          data-testid="cancel-delete"
+        >
+          Cancel
+        </BaseButton>
+        <BaseButton
+          color="error"
+          class="w-full"
+          type="submit"
+          @click="handleDeleteTrack"
+          data-testid="confirm-delete"
+        >
+          Delete
+        </BaseButton>
+      </div>
+    </template>
+  </AppModal>
+</template>

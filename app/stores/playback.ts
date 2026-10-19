@@ -1,0 +1,411 @@
+import { cloneDeep, isEqual } from "lodash";
+import { defineStore } from "pinia";
+import type { DeepReadonly } from "vue";
+import type { Track, TracksFilters } from "~/types";
+
+export const usePlaybackStore = defineStore("playbackStore", () => {
+  const tracksStore = useTracksStore();
+  const { tracks, tracksMeta, hasNextPage, isLoading, isLoadingNextPage } =
+    storeToRefs(tracksStore);
+
+  const filtersStore = useFiltersStore();
+  const { artist, genre, order, search, sort } = storeToRefs(filtersStore);
+
+  const globalQueue = ref<Track[]>([]);
+  const queueListVisible = useLocalStorage("queueListVisible", false);
+  const isShuffle = useLocalStorage("isShuffle", false);
+  const loopingMode = useLocalStorage<"noLoop" | "loopPlaylist" | "loopTrack">(
+    "loopingMode",
+    "noLoop"
+  );
+  const isPlaying = ref(false);
+  const currentPlaybackTime = useLocalStorage("currentPlaybackTime", 0);
+  const isChangingTimeManually = ref(false);
+  const playingTrackId = useLocalStorage<string | null>("playingTrackId", null);
+  const currentTrackDuration = ref(0);
+
+  const usedNavigationDirection = ref<"forward" | "backward" | null>(null);
+
+  const updateCurrentTrackDuration = (newDuration: number) => {
+    currentTrackDuration.value = newDuration;
+  };
+
+  const userQueue = ref<(Track | DeepReadonly<Track>)[]>([]);
+
+  const addToUserQueue = (track: Track | DeepReadonly<Track>) => {
+    userQueue.value.push(track);
+  };
+
+  const startDrug = () => {
+    isChangingTimeManually.value = true;
+  };
+
+  const endDrug = (newDuration: number) => {
+    isChangingTimeManually.value = false;
+    currentPlaybackTime.value = newDuration;
+  };
+
+  const tracksWithAudioFiles = ref();
+  const currentQueueFilters = ref<Omit<TracksFilters, "page">>({
+    artist: artist.value,
+    genre: genre.value,
+    order: order.value,
+    search: search.value,
+    sort: sort.value,
+  });
+  const currentQueuePage = ref(0);
+
+  const setQueueTracksAndFilters = ({
+    tracks,
+    filters,
+    page,
+  }: {
+    tracks?: Track[] | DeepReadonly<Track[]>;
+    filters: Omit<TracksFilters, "page">;
+    page?: number;
+  }) => {
+    tracksWithAudioFiles.value = tracks?.filter((t) => t.audioFile);
+
+    currentQueueFilters.value = filters;
+
+    if (page) {
+      currentQueuePage.value = page;
+    }
+  };
+
+  watch([tracks, artist, genre, order, search, sort], () => {
+    if (
+      isEqual(currentQueueFilters.value, {
+        artist: artist.value,
+        genre: genre.value,
+        order: order.value,
+        search: search.value,
+        sort: sort.value,
+      }) &&
+      tracksMeta.value &&
+      tracksMeta.value.page > currentQueuePage.value
+    ) {
+      setQueueTracksAndFilters({
+        tracks: tracks.value,
+        filters: {
+          artist: artist.value,
+          genre: genre.value,
+          order: order.value,
+          search: search.value,
+          sort: sort.value,
+        },
+        page: tracksMeta.value.page,
+      });
+    }
+  });
+
+  const toggleQueueListVisibility = () => {
+    queueListVisible.value = !queueListVisible.value;
+  };
+
+  const moveTrackInQueue = (fromInQueue: number, toInQueue: number) => {
+    const base =
+      globalPlayingTrackIndex.value === -1 ? 0 : globalPlayingTrackIndex.value;
+
+    const from = base + fromInQueue;
+    const to = base + toInQueue;
+
+    if (from === to) return;
+
+    const arr = [...globalQueue.value];
+
+    const [moved] = arr.splice(from, 1);
+    if (!moved) return;
+
+    arr.splice(to, 0, moved);
+
+    globalQueue.value = arr;
+  };
+
+  const updateQueueList = (
+    isShuffle: boolean,
+    globalQueue: Track[],
+    tracksWithAudioFiles: Track[] | DeepReadonly<Track[]>
+  ): Track[] => {
+    let updatedQueue = [];
+
+    if (!isShuffle) {
+      updatedQueue = cloneDeep(tracksWithAudioFiles) as Track[];
+    } else {
+      const loadedTracks = tracksWithAudioFiles.filter(
+        (t) => !globalQueue.find((i) => i.id === t.id)
+      );
+      const next = shuffleArray(cloneDeep(loadedTracks) as Track[]);
+      if (loadedTracks.length) {
+        updatedQueue = [...globalQueue, ...next];
+      } else {
+        updatedQueue = shuffleArray(cloneDeep(tracksWithAudioFiles) as Track[]);
+      }
+    }
+
+    return updatedQueue;
+  };
+
+  const updateCurrentTrackPosition = () => {
+    const playedTrack = globalQueue.value[globalPlayingTrackIndex.value];
+
+    if (playedTrack) {
+      globalQueue.value = globalQueue.value.filter(
+        (i) => i.id !== playedTrack.id
+      );
+
+      globalQueue.value.unshift(playedTrack);
+    }
+  };
+
+  watch(tracksWithAudioFiles, () => {
+    globalQueue.value = updateQueueList(
+      isShuffle.value,
+      globalQueue.value,
+      tracksWithAudioFiles.value
+    );
+
+    if (isShuffle.value && tracksMeta.value?.page === 1) {
+      updateCurrentTrackPosition();
+    }
+  });
+
+  const globalPlayingTrackIndex = computed(() =>
+    globalQueue.value?.findIndex((t) => t.id === playingTrackId.value)
+  );
+
+  const currentTrackInfo = computed(
+    () => globalQueue.value[globalPlayingTrackIndex.value]
+  );
+
+  const currentTrackSourceUrl = computed(
+    () =>
+      import.meta.env.VITE_BASE_URL +
+      `/api/files/${
+        globalQueue.value[globalPlayingTrackIndex.value]?.audioFile
+      }`
+  );
+
+  const hasNextTrack = computed(
+    () =>
+      globalPlayingTrackIndex.value !== -1 &&
+      !!globalQueue.value[globalPlayingTrackIndex.value + 1]
+  );
+
+  const hasPrevTrack = computed(() => {
+    if (
+      globalPlayingTrackIndex.value === 0 &&
+      loopingMode.value === "loopPlaylist"
+    ) {
+      return false; // TODO:
+    }
+
+    return globalPlayingTrackIndex.value > 0;
+  });
+
+  const currentQueue = computed<Track[]>(() => {
+    const startIndex =
+      globalPlayingTrackIndex.value === -1 ? 0 : globalPlayingTrackIndex.value;
+
+    return globalQueue.value.slice(startIndex);
+  });
+
+  const setPlayingTrackId = (id: string) => {
+    if (
+      !isEqual(currentQueueFilters.value, {
+        artist: artist.value,
+        genre: genre.value,
+        order: order.value,
+        search: search.value,
+        sort: sort.value,
+      })
+    ) {
+      setQueueTracksAndFilters({
+        tracks: tracks.value,
+        filters: {
+          artist: artist.value,
+          genre: genre.value,
+          order: order.value,
+          search: search.value,
+          sort: sort.value,
+        },
+        page: tracksMeta.value?.page,
+      });
+    }
+
+    playingTrackId.value = id;
+    currentPlaybackTime.value = 0;
+    isPlaying.value = true;
+
+    globalQueue.value = updateQueueList(
+      isShuffle.value,
+      globalQueue.value,
+      tracksWithAudioFiles.value
+    );
+
+    if (isShuffle.value) {
+      updateCurrentTrackPosition();
+    }
+
+    usedNavigationDirection.value = "forward";
+  };
+
+  const setPlayingTrackIdFromQueue = (
+    id: string,
+    navigationDirection?: "forward" | "backward"
+  ) => {
+    playingTrackId.value = id;
+    currentPlaybackTime.value = 0;
+    isPlaying.value = true;
+
+    usedNavigationDirection.value = navigationDirection || "forward";
+  };
+
+  const clearPlayingTrackId = () => (playingTrackId.value = null);
+
+  const nextTrack = () => {
+    if (globalPlayingTrackIndex.value === -1) return;
+
+    if (loopingMode.value === "loopTrack") {
+      currentPlaybackTime.value = 0;
+      isPlaying.value = false;
+      return;
+    }
+
+    if (userQueue.value.length) {
+      setPlayingTrackIdFromQueue(userQueue.value.shift()!.id, "forward");
+      return;
+    }
+
+    if (
+      !hasNextTrack.value &&
+      !hasNextPage.value &&
+      loopingMode.value === "loopPlaylist"
+    ) {
+      setPlayingTrackIdFromQueue(globalQueue.value[0]!.id, "forward");
+      return;
+    }
+
+    const id = globalQueue.value[globalPlayingTrackIndex.value + 1]?.id;
+
+    currentPlaybackTime.value = 0;
+    // isPlaying.value = false;
+
+    if (!id) return;
+
+    setPlayingTrackIdFromQueue(id, "forward");
+  };
+
+  const prevTrack = () => {
+    if (globalPlayingTrackIndex.value === -1) return;
+
+    if (loopingMode.value === "loopTrack") {
+      if (currentPlaybackTime.value < 3) {
+        loopingMode.value = "loopPlaylist";
+      } else {
+        isPlaying.value = false;
+        currentPlaybackTime.value = 0;
+        return;
+      }
+    }
+
+    if (!hasPrevTrack.value && loopingMode.value === "loopPlaylist") {
+      // setPlayingTrackId(globalQueue.value[globalQueue.value.length - 1]!.id);
+      return; // TODO:
+    }
+
+    const id = globalQueue.value[globalPlayingTrackIndex.value - 1]?.id;
+
+    // isPlaying.value = false;
+    currentPlaybackTime.value = 0;
+
+    if (!id) return;
+    setPlayingTrackIdFromQueue(id, "backward");
+  };
+
+  const toggleShuffle = () => {
+    isShuffle.value = !isShuffle.value;
+
+    globalQueue.value = updateQueueList(
+      isShuffle.value,
+      globalQueue.value,
+      tracksWithAudioFiles.value
+    );
+
+    if (isShuffle.value) {
+      updateCurrentTrackPosition();
+    }
+  };
+
+  const changeLoopMode = () => {
+    if (loopingMode.value === "noLoop") {
+      loopingMode.value = "loopPlaylist";
+    } else if (loopingMode.value === "loopPlaylist") {
+      loopingMode.value = "loopTrack";
+    } else {
+      loopingMode.value = "noLoop";
+    }
+  };
+
+  const changePlaybackTime = (time: number) => {
+    if (!isChangingTimeManually.value) {
+      currentPlaybackTime.value = time;
+    }
+  };
+
+  const togglePlayTrack = () => {
+    isPlaying.value = !isPlaying.value;
+  };
+
+  watch(
+    [isLoading, isLoadingNextPage, playingTrackId, hasNextPage, hasNextTrack],
+    async () => {
+      if (
+        !isLoading.value &&
+        !isLoadingNextPage.value &&
+        playingTrackId.value &&
+        !hasNextTrack.value &&
+        hasNextPage.value
+      ) {
+        console.log("fetch next trackkkkkkkssssss");
+        await tracksStore.fetchNextPage();
+      }
+    },
+    { flush: "post" }
+  );
+
+  return {
+    playingTrackId: readonly(playingTrackId),
+    queue: readonly(currentQueue),
+    isPlaying: readonly(isPlaying),
+    isShuffle: readonly(isShuffle),
+    loopingMode: readonly(loopingMode),
+    currentPlaybackTime: readonly(currentPlaybackTime),
+    currentTrackSourceUrl: readonly(currentTrackSourceUrl),
+    currentTrackInfo: readonly(currentTrackInfo),
+    queueListVisible: readonly(queueListVisible),
+    globalQueue: readonly(globalQueue),
+    usedNavigationDirection: readonly(usedNavigationDirection),
+    currentTrackDuration: readonly(currentTrackDuration),
+    userQueue: readonly(userQueue),
+    moveTrackInQueue,
+    startDrug,
+    endDrug,
+    updateCurrentTrackDuration,
+    isChangingTimeManually,
+    toggleQueueListVisibility,
+    togglePlayTrack,
+    hasNextPage,
+    changePlaybackTime,
+    setPlayingTrackId,
+    setPlayingTrackIdFromQueue,
+    clearPlayingTrackId,
+    hasNextTrack,
+    hasPrevTrack,
+    nextTrack,
+    prevTrack,
+    toggleShuffle,
+    changeLoopMode,
+    addToUserQueue,
+  };
+});

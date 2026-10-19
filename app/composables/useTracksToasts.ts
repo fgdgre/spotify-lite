@@ -1,0 +1,60 @@
+import type { ApiError } from "@/shared/api";
+import { useToast } from "@/stores/toast";
+
+export const useTracksToasts = () => {
+  const toastsStore = useToast();
+
+  const addErrorToast = (error: ApiError) => {
+    toastsStore.clearToasts();
+
+    toastsStore.addToast({
+      title: error?.message || "Error",
+      description: error.details,
+      color: "error",
+      icon: "warning",
+    });
+  };
+
+  const addSuccessToast = (
+    action: "create" | "delete" | "edit" | "uploadFile" | "deleteFile"
+  ) => {
+    toastsStore.clearToasts();
+
+    let title: string;
+
+    switch (action) {
+      case "create":
+        title = "Track successfully created";
+        break;
+      case "edit":
+        title = "Track successfully edited";
+        break;
+      case "delete":
+        title = "Track successfully deleted";
+        break;
+      case "uploadFile":
+        title = "Track file successfully added";
+        break;
+      case "deleteFile":
+        title = "Track file successfully deleted";
+        break;
+      default:
+        title = "Success";
+        break;
+    }
+
+    toastsStore.addToast({
+      title,
+      color: "success",
+      icon: "check",
+      duration: 1500,
+      showProgress: true,
+    });
+  };
+
+  const clearToasts = () => {
+    useToast().clearToasts();
+  };
+
+  return { addErrorToast, addSuccessToast, clearToasts };
+};
